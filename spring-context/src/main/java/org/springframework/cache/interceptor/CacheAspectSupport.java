@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 the original author or authors.
+ * Copyright 2002-2021 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -222,11 +221,11 @@ public abstract class CacheAspectSupport extends AbstractCacheInvoker
 			}
 			catch (NoUniqueBeanDefinitionException ex) {
 				throw new IllegalStateException("No CacheResolver specified, and no unique bean of type " +
-						"CacheManager found. Mark one as primary or declare a specific CacheManager to use.");
+						"CacheManager found. Mark one as primary or declare a specific CacheManager to use.", ex);
 			}
 			catch (NoSuchBeanDefinitionException ex) {
 				throw new IllegalStateException("No CacheResolver specified, and no bean of type CacheManager found. " +
-						"Register a CacheManager bean or remove the @EnableCaching annotation from your configuration.");
+						"Register a CacheManager bean or remove the @EnableCaching annotation from your configuration.", ex);
 			}
 		}
 		this.initialized = true;
@@ -380,7 +379,7 @@ public abstract class CacheAspectSupport extends AbstractCacheInvoker
 				Object key = generateKey(context, CacheOperationExpressionEvaluator.NO_RESULT);
 				Cache cache = context.getCaches().iterator().next();
 				try {
-					return wrapCacheValue(method, cache.get(key, () -> unwrapReturnValue(invokeOperation(invoker))));
+					return wrapCacheValue(method, handleSynchronizedGet(invoker, key, cache));
 				}
 				catch (Cache.ValueRetrievalException ex) {
 					// Directly propagate ThrowableWrapper from the invoker,
@@ -403,7 +402,7 @@ public abstract class CacheAspectSupport extends AbstractCacheInvoker
 		Cache.ValueWrapper cacheHit = findCachedItem(contexts.get(CacheableOperation.class));
 
 		// Collect puts from any @Cacheable miss, if no cached item is found
-		List<CachePutRequest> cachePutRequests = new LinkedList<>();
+		List<CachePutRequest> cachePutRequests = new ArrayList<>();
 		if (cacheHit == null) {
 			collectPutRequests(contexts.get(CacheableOperation.class),
 					CacheOperationExpressionEvaluator.NO_RESULT, cachePutRequests);
@@ -435,6 +434,22 @@ public abstract class CacheAspectSupport extends AbstractCacheInvoker
 		processCacheEvicts(contexts.get(CacheEvictOperation.class), false, cacheValue);
 
 		return returnValue;
+	}
+
+	@Nullable
+	private Object handleSynchronizedGet(CacheOperationInvoker invoker, Object key, Cache cache) {
+		InvocationAwareResult invocationResult = new InvocationAwareResult();
+		Object result = cache.get(key, () -> {
+			invocationResult.invoked = true;
+			if (logger.isTraceEnabled()) {
+				logger.trace("No cache entry for key '" + key + "' in cache " + cache.getName());
+			}
+			return unwrapReturnValue(invokeOperation(invoker));
+		});
+		if (!invocationResult.invoked && logger.isTraceEnabled()) {
+			logger.trace("Cache entry for key '" + key + "' found in cache '" + cache.getName() + "'");
+		}
+		return result;
 	}
 
 	@Nullable
@@ -868,6 +883,15 @@ public abstract class CacheAspectSupport extends AbstractCacheInvoker
 			}
 			return result;
 		}
+	}
+
+	/**
+	 * Internal holder class for recording that a cache method was invoked.
+	 */
+	private static class InvocationAwareResult {
+
+		boolean invoked;
+
 	}
 
 }
